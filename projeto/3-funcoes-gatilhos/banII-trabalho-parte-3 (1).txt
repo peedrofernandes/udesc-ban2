@@ -1,0 +1,180 @@
+-- BAN II - Trabalho 1 parte 3
+-- André Fidelis, Pedro Fernandes
+
+-- ------------------------------------------------------------------------
+
+-- Trigger 1) Impede o agendamento com menos de 1 dia de antecedência;
+-- onde: agendamento
+-- operações: insert, update
+-- quando: before
+-- nivel: for each row
+
+CREATE OR REPLACE FUNCTION validaDiasAntecedenciaTrigger() RETURNS TRIGGER AS
+$$
+BEGIN
+    IF NEW.datainicial <= NOW() + interval '24 hours' THEN
+        RAISE EXCEPTION 'O agendamento deve ser feito com no mínimo 24 horas de antecedência';
+    END IF;
+    RETURN NEW;
+END;
+$$ 
+LANGUAGE plpgsql;
+
+CREATE TRIGGER validaDiasAntecedenciaTrigger BEFORE INSERT OR UPDATE ON agendamento
+    FOR EACH ROW EXECUTE FUNCTION validaDiasAntecedenciaTrigger();
+
+-- ------------------------------------------------------------------------
+
+-- Trigger 2) Ao excluir o usuário, exclui automaticamente todos os seus agendamentos;
+-- onde: agendamento
+-- operações: delete
+-- quando: after
+-- nivel: for each row
+
+CREATE OR REPLACE FUNCTION excluirAgendamentosUsuarioExcluido() RETURNS TRIGGER AS
+$$
+BEGIN
+    DELETE FROM agendamento WHERE cpf_usuario = OLD.cpf_usuario;
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE TRIGGER tr_excluirUsuarioEAgendamento
+AFTER DELETE ON usuario
+FOR EACH ROW
+EXECUTE FUNCTION excluirAgendamentosUsuarioExcluido();
+  
+-- ------------------------------------------------------------------------
+
+-- Trigger 3) Não permite a inserção de dois agendamentos para o mesmo usuário no mesmo dia;
+-- onde: agendamento
+-- operações: insert, update
+-- quando: before
+-- nivel: for each row
+
+CREATE OR REPLACE FUNCTION verificaAgendamentos() RETURNS TRIGGER AS
+$$
+DECLARE
+	v_count_agendamentos_hoje INTEGER;
+BEGIN
+	SELECT COUNT(*) INTO v_count_agendamentos_hoje FROM agendamento A
+  WHERE A.recorrente = false AND
+  A.datainicial::date = A.datafinal::date AND
+  A.datainicial::date = NEW.datainicial::date AND 
+  A.cpf_usuario = NEW.cpf_usuario;
+  
+  IF (v_count_agendamentos_hoje > 0) THEN
+  	RAISE EXCEPTION 'Não é possível marcar dois agendamentos para o mesmo dia e para o mesmo usuário.';
+  END IF;
+  
+ 	RETURN NEW;
+END;
+$$
+LANGUAGE PLPGSQL;
+
+CREATE TRIGGER verificaAgendamentos BEFORE INSERT OR UPDATE ON agendamento
+	FOR EACH ROW EXECUTE PROCEDURE verificaAgendamentos();
+
+-- ------------------------------------------------------------------------
+
+-- Trigger 4) Não permite que o agendamento dure mais do que duas horas;
+-- onde: agendamento
+-- operações: insert, update
+-- quando: before
+-- nivel: for each row
+
+CREATE OR REPLACE FUNCTION verificaDuracaoAgendamento() RETURNS TRIGGER AS
+$$
+BEGIN
+    IF (EXTRACT(EPOCH FROM (NEW.horario_final - NEW.horario_inicial)) / 60 > 120) THEN
+        RAISE EXCEPTION 'O agendamento não deve durar mais do que duas horas.';
+    END IF;
+    RETURN NEW;
+END;
+$$
+LANGUAGE PLPGSQL;
+
+CREATE TRIGGER verificaDuracaoAgendamento BEFORE INSERT OR UPDATE ON agendamento
+	FOR EACH ROW EXECUTE PROCEDURE verificaDuracaoAgendamento();
+
+-- ------------------------------------------------------------------------
+
+-- Trigger 5) Não permite que o horário final do agendamento seja menor do que o horário inicial;
+-- onde: agendamento
+-- operações: insert, update
+-- quando: before
+-- nivel: for each row
+
+CREATE OR REPLACE FUNCTION verificaDuracaoNegativa() RETURNS TRIGGER AS
+$$
+BEGIN
+	IF (EXTRACT(EPOCH FROM NEW.horario_final - NEW.horario_inicial) <= 0) THEN
+  	RAISE EXCEPTION 'O horário final deve ser depois do horário inicial!';
+  END IF;
+  RETURN NEW;
+END;
+$$
+LANGUAGE PLPGSQL;
+
+CREATE TRIGGER verificaDuracaoNegativa BEFORE INSERT OR UPDATE ON agendamento	
+	FOR EACH ROW EXECUTE PROCEDURE verificaDuracaoNegativa();
+
+-- ------------------------------------------------------------------------
+
+-- Trigger 6) Não permite que agendamentos sejam feitos no mesmo dia, na mesma quadra, com inserseção de horários;
+-- onde: agendamento
+-- operações: insert, update
+-- quando: before
+-- nivel: for each row
+
+CREATE OR REPLACE FUNCTION verificaChoqueHorario() RETURNS TRIGGER AS
+$$
+DECLARE
+	v_t0 INTEGER;
+  v_t INTEGER;
+  v_count INTEGER;
+BEGIN
+	v_t0 := EXTRACT(EPOCH from NEW.horario_inicial);
+  v_t := EXTRACT(EPOCH from NEW.horario_final);
+
+	SELECT COUNT(*) into v_count FROM agendamento a
+  WHERE a.datainicial = NEW.datainicial AND a.id_quadra = NEW.id_quadra AND (
+    (EXTRACT(EPOCH from a.horario_inicial) >= v_t0 AND EXTRACT(EPOCH from a.horario_inicial) < v_t) OR
+    (EXTRACT(EPOCH from a.horario_final) > v_t0 AND EXTRACT(EPOCH from a.horario_final) <= v_t)
+  );
+
+	IF (v_count > 0) THEN
+  	RAISE EXCEPTION 'Não foi possível realizar o agendamento por choque de horário!';
+  END IF;
+  
+  RETURN NEW;
+ END;
+ $$
+ LANGUAGE PLPGSQL;
+ 
+ CREATE TRIGGER verificaChoqueHorario BEFORE INSERT OR UPDATE ON agendamento
+ 	FOR EACH ROW EXECUTE PROCEDURE verificaChoqueHorario();
+  
+-- Trigger 7) Não permite que agendamentos sejam feitos entre 00:00 e 06:00 de qualquer dia;
+-- onde: agendamento
+-- operações: insert, update
+-- quando: before
+-- nivel: for each row
+
+CREATE OR REPLACE FUNCTION verificaHorarioFechado() RETURNS TRIGGER AS
+$$
+BEGIN
+	IF (
+    (EXTRACT(HOUR from NEW.horario_inicial) >= 0 AND EXTRACT(HOUR from NEW.horario_inicial) < 6) OR
+    (EXTRACT(HOUR from NEW.horario_final) >= 0 AND EXTRACT(HOUR from NEW.horario_final) < 6)
+  ) THEN
+  	RAISE EXCEPTION 'Não é possível realizar o agendamento. O estabelecimento é fechado das 00:00 até as 06:00!';
+ 	END IF;
+  
+  RETURN NEW;
+END;
+$$
+LANGUAGE PLPGSQL;
+
+CREATE TRIGGER verificaHorarioFechado BEFORE INSERT OR UPDATE ON agendamento
+	FOR EACH ROW EXECUTE PROCEDURE verificaHorarioFechado();
